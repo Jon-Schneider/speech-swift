@@ -195,6 +195,27 @@ public class VibeVoiceStreamInference {
 
     private var cachedTimesteps: [Int32] = []
 
+    private let cancellationLock = NSLock()
+    private var cancellationRequested = false
+
+    /// Cooperative cancellation. The streaming generation loop is a long synchronous MLX computation with
+    /// no suspension points, so Swift `Task` cancellation can't reach it. Callers request a stop (via
+    /// `VibeVoiceTTSModel.cancelGeneration()` or stream teardown) and the loop returns at the next window
+    /// boundary. The shared KV caches are then left partially extended, so a caller MUST `loadVoiceCache`
+    /// (which re-initializes them) before generating again.
+    public func requestGenerationCancellation() {
+        cancellationLock.lock(); cancellationRequested = true; cancellationLock.unlock()
+    }
+
+    private func resetGenerationCancellation() {
+        cancellationLock.lock(); cancellationRequested = false; cancellationLock.unlock()
+    }
+
+    private var isGenerationCancellationRequested: Bool {
+        cancellationLock.lock(); defer { cancellationLock.unlock() }
+        return cancellationRequested
+    }
+
     public init(model: VibeVoiceStreamModel, numInferenceSteps: Int = 20, cfgScale: Float = 3.0) {
         self.model = model
         self.numInferenceSteps = numInferenceSteps
@@ -433,6 +454,10 @@ public class VibeVoiceStreamInference {
             throw VibeVoiceError.voiceCacheNotLoaded
         }
 
+        // Fresh run: clear any stop requested against a prior generation. Callers serialize generations
+        // (a new one only starts after the previous has fully returned), so this never races a live loop.
+        resetGenerationCancellation()
+
         let batchSize = ttsTextIds.dim(0)
         let totalTextTokens = ttsTextIds.dim(1)
         let acousticCache = StreamingConvCache()
@@ -442,6 +467,7 @@ public class VibeVoiceStreamInference {
         var finished = false
 
         while !finished {
+            if isGenerationCancellationRequested { return }
             let windowStart = textWindowIndex * TTSConstants.textWindowSize
             let windowEnd = min((textWindowIndex + 1) * TTSConstants.textWindowSize, totalTextTokens)
 
@@ -469,6 +495,7 @@ public class VibeVoiceStreamInference {
             }
 
             for _ in 0..<TTSConstants.speechWindowSize {
+                if isGenerationCancellationRequested { return }
                 if totalGeneratedSpeech >= maxSpeechTokens {
                     finished = true
                     break

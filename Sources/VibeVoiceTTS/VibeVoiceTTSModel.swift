@@ -148,6 +148,14 @@ public final class VibeVoiceTTSModel {
         try loadVoice(from: URL(fileURLWithPath: path))
     }
 
+    /// Request that an in-flight `generateChunkStream` / `generate` stop at the next window boundary. The
+    /// synchronous MLX generation loop ignores `Task` cancellation, so this is the only way to stop it
+    /// early. After cancelling, re-`loadVoice` before generating again (the shared KV caches are left
+    /// partially extended).
+    public func cancelGeneration() {
+        inference.requestGenerationCancellation()
+    }
+
     // MARK: - Generation
 
     /// Synthesize speech for the given text. Requires a voice cache to be
@@ -680,6 +688,12 @@ public final class VibeVoiceTTSModel {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            // If the consumer stops early (stream cancelled / iterator dropped), tell the synchronous
+            // generation loop to stop too — otherwise it keeps mutating the shared KV caches in the
+            // background and races the next generation.
+            continuation.onTermination = { [inference] _ in
+                inference.requestGenerationCancellation()
             }
         }
     }
