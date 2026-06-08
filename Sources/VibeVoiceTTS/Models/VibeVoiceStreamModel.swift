@@ -487,13 +487,7 @@ public class VibeVoiceStreamInference {
             if isGenerationCancellationRequested { return }
             let windowStart = textWindowIndex * TTSConstants.textWindowSize
             let windowEnd = min((textWindowIndex + 1) * TTSConstants.textWindowSize, totalTextTokens)
-
-            // Report how much of the input text this window has consumed before emitting its audio, so a
-            // consumer can extrapolate the total duration. Reaches 1 once the model is generating the
-            // post-text tail (windowStart >= totalTextTokens), where the estimate just tracks the buffer.
-            if totalTextTokens > 0 {
-                setTextConsumptionProgress(Double(min(windowEnd, totalTextTokens)) / Double(totalTextTokens))
-            }
+            let windowTextSize = max(0, windowEnd - windowStart)
 
             if windowStart < totalTextTokens {
                 let curTextIds = ttsTextIds[0..., windowStart..<windowEnd]
@@ -518,11 +512,22 @@ public class VibeVoiceStreamInference {
                 textWindowIndex += 1
             }
 
-            for _ in 0..<TTSConstants.speechWindowSize {
+            for speechStep in 0..<TTSConstants.speechWindowSize {
                 if isGenerationCancellationRequested { return }
                 if totalGeneratedSpeech >= maxSpeechTokens {
                     finished = true
                     break
+                }
+
+                // Advance text-consumption progress in step with the audio this window emits (one fraction
+                // per speech latent) rather than jumping a whole window ahead up front. Audio accrues
+                // continuously, so reporting progress in lockstep keeps a consumer's `buffered / progress`
+                // duration estimate from sawtoothing. In the post-text tail (windowTextSize == 0) it holds
+                // at 1 and the estimate simply tracks the buffer.
+                if totalTextTokens > 0 {
+                    let stepFraction = Double(speechStep + 1) / Double(TTSConstants.speechWindowSize)
+                    let consumed = Double(min(windowStart, totalTextTokens)) + stepFraction * Double(windowTextSize)
+                    setTextConsumptionProgress(min(consumed / Double(totalTextTokens), 1))
                 }
 
                 guard let ttsHidden = ttsLmLastHidden else {
