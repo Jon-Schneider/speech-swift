@@ -156,6 +156,12 @@ public final class VibeVoiceTTSModel {
         inference.requestGenerationCancellation()
     }
 
+    /// Fraction (0...1) of the input text the current/most-recent `generateChunkStream` has consumed.
+    /// Resets to 0 when a new generation starts. Useful for estimating total duration mid-generation.
+    public var generationTextProgress: Double {
+        inference.textConsumptionProgress
+    }
+
     // MARK: - Generation
 
     /// Synthesize speech for the given text. Requires a voice cache to be

@@ -216,6 +216,22 @@ public class VibeVoiceStreamInference {
         return cancellationRequested
     }
 
+    private let progressLock = NSLock()
+    private var textConsumptionProgressValue: Double = 0
+
+    /// Fraction (0...1) of the input text tokens the streaming loop has consumed so far. Audio is produced
+    /// roughly in proportion to text consumed, so a caller can estimate the total duration as
+    /// `bufferedAudioSeconds / textConsumptionProgress` well before generation finishes (an autoregressive
+    /// model only knows the exact length at EOS). Resets to 0 at the start of each generation.
+    public var textConsumptionProgress: Double {
+        progressLock.lock(); defer { progressLock.unlock() }
+        return textConsumptionProgressValue
+    }
+
+    private func setTextConsumptionProgress(_ value: Double) {
+        progressLock.lock(); textConsumptionProgressValue = value; progressLock.unlock()
+    }
+
     public init(model: VibeVoiceStreamModel, numInferenceSteps: Int = 20, cfgScale: Float = 3.0) {
         self.model = model
         self.numInferenceSteps = numInferenceSteps
@@ -457,6 +473,7 @@ public class VibeVoiceStreamInference {
         // Fresh run: clear any stop requested against a prior generation. Callers serialize generations
         // (a new one only starts after the previous has fully returned), so this never races a live loop.
         resetGenerationCancellation()
+        setTextConsumptionProgress(0)
 
         let batchSize = ttsTextIds.dim(0)
         let totalTextTokens = ttsTextIds.dim(1)
@@ -470,6 +487,13 @@ public class VibeVoiceStreamInference {
             if isGenerationCancellationRequested { return }
             let windowStart = textWindowIndex * TTSConstants.textWindowSize
             let windowEnd = min((textWindowIndex + 1) * TTSConstants.textWindowSize, totalTextTokens)
+
+            // Report how much of the input text this window has consumed before emitting its audio, so a
+            // consumer can extrapolate the total duration. Reaches 1 once the model is generating the
+            // post-text tail (windowStart >= totalTextTokens), where the estimate just tracks the buffer.
+            if totalTextTokens > 0 {
+                setTextConsumptionProgress(Double(min(windowEnd, totalTextTokens)) / Double(totalTextTokens))
+            }
 
             if windowStart < totalTextTokens {
                 let curTextIds = ttsTextIds[0..., windowStart..<windowEnd]
