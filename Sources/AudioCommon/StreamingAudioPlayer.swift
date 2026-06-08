@@ -1,5 +1,10 @@
 #if canImport(AVFoundation)
 import AVFoundation
+// On Mac Catalyst, `import AVFoundation` does not transitively expose the Swift overlay type
+// `UnsafeMutableAudioBufferListPointer` (used in the AVAudioSourceNode render block below), unlike on
+// iOS. It is declared in the CoreAudio module, so import it explicitly for all platforms this file
+// compiles for.
+import CoreAudio
 import os
 
 /// Lock-free SPSC ring buffer for audio samples.
